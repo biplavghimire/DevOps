@@ -1,330 +1,432 @@
-# Two-VM WordPress Lab with Ubuntu and VirtualBox
+# Two-VM WordPress Lab with Ubuntu and Vagrant
 
-This tutorial deploys WordPress on two local Ubuntu virtual machines:
+This directory provisions a WordPress environment using two Ubuntu virtual machines:
 
-```text
-WEB SERVER: 192.168.56.10
-├── Apache2
-├── PHP
-└── WordPress
-       │
-       │ MySQL connection over TCP 3306
-       ▼
-DATABASE SERVER: 192.168.56.20
-└── MySQL
-    └── wordpress
-```
+- **Web server:** `192.168.56.10` — Apache, PHP, and WordPress
+- **Database server:** `192.168.56.20` — MySQL and the `wordpress` database
 
-The web server is the only VM that serves HTTP. The database server is not exposed to the host or the public network; MySQL accepts connections only from the web server.
+The web server connects to MySQL over TCP port `3306` on the private network.
 
 ## Prerequisites
 
-Install the following on your host computer:
+Install the following on the host computer:
 
 - VirtualBox
 - Vagrant
-- At least 4 GB RAM available for the VMs
-- An internet connection for downloading Ubuntu packages and WordPress
+- At least 4 GB of available RAM
+- An internet connection for downloading the Ubuntu box and packages
 
-The commands below assume Ubuntu 22.04 or Ubuntu 24.04 VMs and a host-only VirtualBox network named `vboxnet0` using `192.168.56.0/24`. If your host-only adapter uses another subnet, replace the addresses consistently everywhere.
+## Start the environment
 
-## 1. Create the two Ubuntu VMs
-
-You can create two VMs manually in VirtualBox, or use the following Vagrantfile. Vagrant is recommended because it makes the lab repeatable.
-
-Create a directory and save this as `Vagrantfile`:
-
-```ruby
-Vagrant.configure("2") do |config|
-  config.vm.box = "ubuntu/jammy64"
-
-  config.vm.define "web" do |web|
-    web.vm.hostname = "wordpress-web"
-    web.vm.network "private_network", ip: "192.168.56.10"
-    web.vm.provider "virtualbox" do |vb|
-      vb.name = "wordpress-web"
-      vb.memory = 2048
-      vb.cpus = 2
-    end
-  end
-
-  config.vm.define "db" do |db|
-    db.vm.hostname = "wordpress-db"
-    db.vm.network "private_network", ip: "192.168.56.20"
-    db.vm.provider "virtualbox" do |vb|
-      vb.name = "wordpress-db"
-      vb.memory = 2048
-      vb.cpus = 2
-    end
-  end
-end
-```
-
-Start both machines:
+Run these commands from this `vagrant` directory:
 
 ```bash
 vagrant up
 vagrant status
 ```
 
-The default Vagrant NAT adapter provides internet access for package installation. The private adapter provides communication between the two VMs and the host at the fixed addresses above.
+The provisioning scripts run automatically when the machines are created. After provisioning completes, open:
 
-Connect to a VM with:
+<http://192.168.56.10>
+
+Useful commands:
 
 ```bash
-vagrant ssh web
-vagrant ssh db
+vagrant ssh web       # Connect to the web server
+vagrant ssh db        # Connect to the database server
+vagrant provision     # Run provisioning scripts again
+vagrant halt          # Stop the virtual machines
+vagrant destroy       # Remove the virtual machines and their data
 ```
 
-If you created the machines manually, configure each VM with two adapters:
+## File structure
 
-1. **NAT** for internet access.
-2. **Host-only Adapter** attached to `vboxnet0`.
-
-Assign `192.168.56.10/24` to the web VM and `192.168.56.20/24` to the database VM. Do not assign the same IP to both machines.
-
-## 2. Configure the database server
-
-Connect to the database VM:
-
-```bash
-vagrant ssh db
+```text
+vagrant/
+├── Vagrantfile
+├── web.sh
+├── db.sh
+└── README.md
 ```
 
-Install MySQL:
+## Vagrantfile
 
-```bash
-sudo apt update
-sudo apt install -y mysql-server
-```
+The `Vagrantfile` creates the web and database VMs, assigns their private IP addresses, and runs the matching provisioning script.
 
-By default, MySQL may listen only on localhost. Change it to listen on the database VM's private address:
+````ruby name=Vagrantfile
+Vagrant.configure("2") do |config|
 
-```bash
-sudo sed -i 's/^bind-address.*/bind-address = 192.168.56.20/' /etc/mysql/mysql.conf.d/mysqld.cnf
-sudo systemctl restart mysql
-sudo systemctl enable mysql
-```
+  config.vm.box_check_update = false
 
-Create the WordPress database and a user that can connect only from the web server. Replace the example password with a strong password and remember it for `wp-config.php`:
+  # =========================
+  # WEB SERVER
+  # =========================
+  config.vm.define "web" do |web|
 
-```bash
-sudo mysql <<'SQL'
-CREATE DATABASE wordpress DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'wpuser'@'192.168.56.10' IDENTIFIED BY 'ChangeThisToAStrongPassword!';
-GRANT ALL PRIVILEGES ON wordpress.* TO 'wpuser'@'192.168.56.10';
-FLUSH PRIVILEGES;
-SQL
-```
+    web.vm.box = "ubuntu/jammy64"
+    web.vm.hostname = "wordpress-web"
 
-Allow TCP port 3306 only from the web VM. If UFW is enabled, run:
+    web.vm.network "private_network",
+      ip: "192.168.56.10"
 
-```bash
-sudo ufw allow from 192.168.56.10 to any port 3306 proto tcp
-sudo ufw enable
-sudo ufw status
-```
+    web.vm.provider "virtualbox" do |vb|
+      vb.name = "WordPress-Web"
+      vb.memory = 2048
+      vb.cpus = 2
+    end
 
-Verify that MySQL is listening on the private address:
+    web.vm.provision "shell",
+      path: "web.sh"
 
-```bash
-sudo ss -lntp | grep 3306
-```
+  end
 
-## 3. Test the database connection from the web server
+  # =========================
+  # DATABASE SERVER
+  # =========================
+  config.vm.define "db" do |db|
 
-Connect to the web VM:
+    db.vm.box = "ubuntu/jammy64"
+    db.vm.hostname = "wordpress-db"
 
-```bash
-vagrant ssh web
-```
+    db.vm.network "private_network",
+      ip: "192.168.56.20"
 
-Install the MySQL client and test the private-network connection:
+    db.vm.provider "virtualbox" do |vb|
+      vb.name = "WordPress-Database"
+      vb.memory = 2048
+      vb.cpus = 2
+    end
 
-```bash
-sudo apt update
-sudo apt install -y mysql-client
-mysql -h 192.168.56.20 -u wpuser -p wordpress
-```
+    db.vm.provision "shell",
+      path: "db.sh"
 
-Enter the password created on the database server. At the MySQL prompt, run `SHOW TABLES;`; it should work even though the database is currently empty. Leave MySQL with `exit`.
+  end
 
-If the connection fails, check the VM addresses, the database `bind-address`, the UFW rule, and the MySQL user host (`'wpuser'@'192.168.56.10'`).
+end
+````
 
-## 4. Install Apache, PHP, and WordPress on the web server
+## web.sh
 
-Install Apache, PHP, and the extensions required by WordPress:
+This script installs Apache, PHP, the WordPress dependencies, and WordPress itself. It also configures the WordPress database connection and Apache virtual host.
 
-```bash
-sudo apt install -y apache2 php libapache2-mod-php php-mysql php-curl \
-  php-gd php-mbstring php-xml php-xmlrpc php-soap php-intl php-zip unzip curl
-sudo systemctl enable --now apache2
-```
+````bash name=web.sh
+#!/usr/bin/env bash
 
-Download and install WordPress:
+set -e
 
-```bash
+echo "=========================================="
+echo " Starting Web Server Setup"
+echo "=========================================="
+
+export DEBIAN_FRONTEND=noninteractive
+
+# ==========================================================
+# UPDATE UBUNTU
+# ==========================================================
+
+echo "[1/15] Updating Ubuntu..."
+
+apt-get update
+
+# ==========================================================
+# INSTALL APACHE, PHP, MYSQL CLIENT AND TOOLS
+# ==========================================================
+
+echo "[2/15] Installing Apache2, PHP and required packages..."
+
+apt-get install -y \
+    apache2 \
+    php \
+    libapache2-mod-php \
+    php-mysql \
+    php-curl \
+    php-gd \
+    php-mbstring \
+    php-xml \
+    php-zip \
+    php-intl \
+    php-soap \
+    mysql-client \
+    netcat-openbsd \
+    curl \
+    wget \
+    tar
+
+# ==========================================================
+# START APACHE
+# ==========================================================
+
+echo "[3/15] Starting Apache2..."
+
+systemctl enable apache2
+systemctl start apache2
+
+# ==========================================================
+# WAIT FOR DATABASE SERVER
+# ==========================================================
+
+echo "[4/15] Waiting for MySQL Database Server..."
+
+DB_IP="192.168.56.20"
+DB_PORT="3306"
+
+for i in $(seq 1 60); do
+    if nc -z "$DB_IP" "$DB_PORT"; then
+        echo "MySQL is reachable at $DB_IP:$DB_PORT"
+        break
+    fi
+
+    echo "Waiting for MySQL... attempt $i/60"
+    sleep 2
+done
+
+if ! nc -z "$DB_IP" "$DB_PORT"; then
+    echo "ERROR: Database server is not reachable."
+    exit 1
+fi
+
+# ==========================================================
+# DOWNLOAD WORDPRESS
+# ==========================================================
+
+echo "[5/15] Downloading WordPress..."
+
 cd /tmp
-curl -O https://wordpress.org/latest.tar.gz
-tar -xzf latest.tar.gz
-sudo rm -rf /var/www/wordpress
-sudo mv wordpress /var/www/wordpress
-sudo chown -R www-data:www-data /var/www/wordpress
-sudo find /var/www/wordpress -type d -exec chmod 755 {} \;
-sudo find /var/www/wordpress -type f -exec chmod 644 {} \;
-```
+rm -rf wordpress wordpress.tar.gz
 
-Create an Apache virtual host. This example serves WordPress at the web VM's IP address:
+curl -fsSL \
+https://wordpress.org/latest.tar.gz \
+-o wordpress.tar.gz
 
-```bash
-sudo tee /etc/apache2/sites-available/wordpress.conf >/dev/null <<'APACHE'
+# ==========================================================
+# EXTRACT WORDPRESS
+# ==========================================================
+
+echo "[6/15] Extracting WordPress..."
+
+tar -xzf wordpress.tar.gz
+
+# ==========================================================
+# REMOVE DEFAULT APACHE PAGE
+# ==========================================================
+
+echo "[7/15] Preparing Apache document root..."
+
+rm -rf /var/www/html/*
+
+# ==========================================================
+# COPY WORDPRESS
+# ==========================================================
+
+echo "[8/15] Installing WordPress..."
+
+cp -a wordpress/. /var/www/html/
+
+# ==========================================================
+# CREATE WORDPRESS CONFIG
+# ==========================================================
+
+echo "[9/15] Creating wp-config.php..."
+
+cd /var/www/html
+cp wp-config-sample.php wp-config.php
+
+sed -i "s/database_name_here/wordpress/" wp-config.php
+sed -i "s/username_here/wpuser/" wp-config.php
+sed -i "s/password_here/WpDatabasePassword123!/" wp-config.php
+sed -i "s/define( 'DB_HOST', 'localhost' );/define( 'DB_HOST', '192.168.56.20' );/" wp-config.php
+
+# ==========================================================
+# GENERATE WORDPRESS SECURITY SALTS
+# ==========================================================
+
+echo "[10/15] Generating WordPress security salts..."
+
+SALT=$(curl -fsSL \
+https://api.wordpress.org/secret-key/1.1/salt/)
+
+python3 - <<PY
+from pathlib import Path
+
+config = Path("/var/www/html/wp-config.php")
+text = config.read_text()
+start = text.find("define( 'AUTH_KEY'")
+end_marker = "/* That's it, stop editing! Happy publishing. */"
+end = text.find(end_marker)
+
+if start != -1 and end != -1:
+    new_text = (
+        text[:start]
+        + """$SALT
+
+"""
+        + text[end:]
+    )
+    config.write_text(new_text)
+PY
+
+# ==========================================================
+# WORDPRESS DIRECTORY PERMISSIONS
+# ==========================================================
+
+echo "[11/15] Setting WordPress permissions..."
+
+chown -R www-data:www-data /var/www/html
+
+find /var/www/html \
+-type d \
+-exec chmod 755 {} \;
+
+find /var/www/html \
+-type f \
+-exec chmod 644 {} \;
+
+# ==========================================================
+# ENABLE APACHE REWRITE
+# ==========================================================
+
+echo "[12/15] Enabling Apache rewrite..."
+
+a2enmod rewrite
+
+# ==========================================================
+# CREATE APACHE VIRTUAL HOST
+# ==========================================================
+
+echo "[13/15] Creating Apache VirtualHost..."
+
+cat > /etc/apache2/sites-available/wordpress.conf <<'EOF'
 <VirtualHost *:80>
     ServerName 192.168.56.10
-    DocumentRoot /var/www/wordpress
+    DocumentRoot /var/www/html
 
-    <Directory /var/www/wordpress>
+    <Directory /var/www/html>
         AllowOverride All
         Require all granted
     </Directory>
 
+    DirectoryIndex index.php index.html
     ErrorLog ${APACHE_LOG_DIR}/wordpress_error.log
     CustomLog ${APACHE_LOG_DIR}/wordpress_access.log combined
 </VirtualHost>
-APACHE
+EOF
 
-sudo a2dissite 000-default.conf
-sudo a2enmod rewrite
-sudo a2ensite wordpress.conf
-sudo apache2ctl configtest
-sudo systemctl reload apache2
-```
+# ==========================================================
+# ENABLE WORDPRESS SITE
+# ==========================================================
 
-If UFW is enabled on the web VM, permit HTTP traffic:
+echo "[14/15] Enabling WordPress Apache site..."
 
-```bash
-sudo ufw allow 80/tcp
-sudo ufw enable
-```
+a2dissite 000-default.conf || true
+a2ensite wordpress.conf
 
-## 5. Complete the WordPress setup
+# ==========================================================
+# TEST APACHE CONFIGURATION
+# ==========================================================
 
-From the host computer, open:
+echo "[15/15] Testing Apache..."
 
-<http://192.168.56.10>
+apache2ctl configtest
+systemctl restart apache2
 
-Select a language and enter these database settings:
+# ==========================================================
+# TEST DATABASE CONNECTION
+# ==========================================================
 
-| WordPress field | Value |
-|---|---|
-| Database Name | `wordpress` |
-| Username | `wpuser` |
-| Password | The password created on the database VM |
-| Database Host | `192.168.56.20` |
-| Table Prefix | `wp_` |
+echo ""
+echo "Testing connection from Web Server to Database Server..."
 
-Continue the installer, choose a site title, create the administrator account, and log in at:
+MYSQL_PWD='WpDatabasePassword123!' \
+mysql \
+-h 192.168.56.20 \
+-u wpuser \
+-e "SELECT 1;" wordpress
 
-<http://192.168.56.10/wp-admin>
+echo ""
+echo "=========================================="
+echo " WEB SERVER SETUP COMPLETE"
+echo "=========================================="
+echo "Web Server IP : 192.168.56.10"
+echo "Database IP   : 192.168.56.20"
+echo "Website       : http://192.168.56.10"
+echo ""
+````
 
-WordPress will write the database connection settings to `/var/www/wordpress/wp-config.php`. Protect the file after installation:
+## db.sh
 
-```bash
-sudo chown www-data:www-data /var/www/wordpress/wp-config.php
-sudo chmod 640 /var/www/wordpress/wp-config.php
-```
+This script installs MySQL, creates the WordPress database and user, and configures MySQL to accept connections from the web server.
 
-## 6. Optional local hostname
+````bash name=db.sh
+#!/bin/bash
 
-To use a friendly local name instead of the IP address, add this line to the **host computer's** hosts file:
+set -e
 
-```text
-192.168.56.10 wordpress.local
-```
+echo "======================================"
+echo " Installing MySQL Database Server"
+echo "======================================"
 
-The hosts file is `/etc/hosts` on Linux and macOS, and `C:\Windows\System32\drivers\etc\hosts` on Windows. Then open:
+apt-get update
 
-<http://wordpress.local>
+DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
 
-If you use the hostname in Apache, set `ServerName wordpress.local` and reload Apache. Do not put the database IP in the browser; `192.168.56.20` is only for the web server's MySQL connection.
+systemctl enable mysql
+systemctl start mysql
 
-## 7. Verify the architecture
 
-On the web VM, verify Apache and PHP:
+echo "======================================"
+echo " Creating WordPress Database"
+echo "======================================"
 
-```bash
-systemctl is-active apache2
-php -v
-curl -I http://192.168.56.10
-```
+mysql <<EOF
 
-On the database VM, verify MySQL:
+CREATE DATABASE IF NOT EXISTS wordpress
+CHARACTER SET utf8mb4
+COLLATE utf8mb4_unicode_ci;
 
-```bash
+CREATE USER IF NOT EXISTS 'wpuser'@'192.168.56.10'
+IDENTIFIED BY 'WpDatabasePassword123!';
+
+ALTER USER 'wpuser'@'192.168.56.10'
+IDENTIFIED BY 'WpDatabasePassword123!';
+
+GRANT ALL PRIVILEGES ON wordpress.*
+TO 'wpuser'@'192.168.56.10';
+
+FLUSH PRIVILEGES;
+
+EOF
+
+
+echo "======================================"
+echo " Configuring MySQL Remote Access"
+echo "======================================"
+
+sed -i 's/^bind-address.*/bind-address = 0.0.0.0/' \
+/etc/mysql/mysql.conf.d/mysqld.cnf
+
+systemctl restart mysql
+
+
+echo "======================================"
+echo " Checking MySQL"
+echo "======================================"
+
 systemctl is-active mysql
-sudo ss -lntp | grep 3306
-```
 
-From the web VM, verify that port 3306 is reachable:
+ss -lntp | grep 3306 || true
 
-```bash
-nc -vz 192.168.56.20 3306
-```
 
-The expected traffic flow is:
+echo "======================================"
+echo " DATABASE SERVER READY"
+echo "======================================"
 
-```text
-Browser -> 192.168.56.10:80 -> Apache/PHP/WordPress
-                                      |
-                                      +-> 192.168.56.20:3306 -> MySQL/wordpress
-```
+echo "Database Server IP : 192.168.56.20"
+echo "Database           : wordpress"
+echo "User               : wpuser"
+echo "Allowed Web IP     : 192.168.56.10"
+echo "MySQL Port         : 3306"
+````
 
-## Troubleshooting
+## Important note
 
-### “Error establishing a database connection”
-
-Check the following:
-
-```bash
-# On the web VM
-mysql -h 192.168.56.20 -u wpuser -p wordpress
-
-# On the database VM
-sudo systemctl status mysql
-sudo journalctl -u mysql --no-pager -n 50
-grep bind-address /etc/mysql/mysql.conf.d/mysqld.cnf
-```
-
-Ensure that the database user is created as `wpuser` from `192.168.56.10`, not only as `wpuser` from `localhost`.
-
-### Apache shows a blank page or HTTP 500
-
-Inspect the Apache and PHP logs:
-
-```bash
-sudo tail -f /var/log/apache2/wordpress_error.log
-sudo apache2ctl configtest
-```
-
-### The browser cannot reach the site
-
-Confirm that the web VM is running, that its private IP is `192.168.56.10`, and that port 80 is allowed:
-
-```bash
-ip addr
-sudo ufw status
-curl http://192.168.56.10
-```
-
-## Stopping and removing the lab
-
-To stop the Vagrant VMs while keeping their disks:
-
-```bash
-vagrant halt
-```
-
-To remove the VMs and all data stored inside them:
-
-```bash
-vagrant destroy
-```
+The database password is currently defined in both `db.sh` and `web.sh` as `WpDatabasePassword123!`. Change it in both files before using this setup outside a local learning environment. Also consider restricting MySQL access with a firewall rule so that port `3306` is reachable only from `192.168.56.10`.
